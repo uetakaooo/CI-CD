@@ -1,0 +1,224 @@
+satages:
+ -build
+ -execute-sql
+ -test
+ -generate-report
+ -deploy
+ -update-history
+
+variables:
+  EXECUTE_ENV:
+    value: "LT"
+    options:
+      - "LT"
+      - "ST"
+    description: "テスト実行する環境を選択してください。デフォルトはLT環境です。"
+  CUCUMBER_TAGS:
+    value: ""
+    description: "テスト対象のタグを設定してください。設定しない場合全テストが実行されます。"
+  MANUAL_TARGET_JOB:
+    value: "test-execution"
+    options:
+     - "test-execution"
+     - "build"
+    description: "手動実行したいジョブのパターンを選択してください。デフォルトではテスト実行されます。ビルド実行したい場合はbuildを選択してください。"
+  FOLDER_LIMIT_VALUE:
+    value: "4"
+    description: "generate-allure-reportで生成したフォルダの保持数を設定してください。フォルダ数が指定した値よりも多くなった場合、古いフォルダから指定した数までフォルダを削除します。"
+  BUILDOUTPUT_DIR: "work/output-path"
+  DEPLOY_OUTPUT_DIR: "public/"
+  ASTA_REPORT_REPO: "10.202.6.184:18080/nkccis/efront.asta_report.git"
+  ASTA_REPORT_REPO_LOCAL_DIR: "asta-report"
+  HISTORY_DIR: "allure-history"
+  GIT_LFS_SKIPSMUDGE: 1
+
+before_script:
+  -git config --global user.email
+  -git config --global user.name
+
+confirm-compile:
+  stage: build
+  tags:
+    -asta2-testAutomation
+  script:
+    -mvn test-compile
+  rurles:
+     #任意のブランチ(masterへのマージも含む)にPushした場合にビルド実行
+     - if: '$CI_PIPELINE_SOURCE == "push"'
+       when: on_success
+     - if: '$CI_PIPELINE_SOURCE == "web && $MANUAL_TARGET_JOB == "build"'
+       when: on_success
+
+execute-sql:
+  stage: execute-sql
+  tags:
+    -asta2-testAutomation
+  script:
+    -pwd
+    -chmod +x $CI_PROJECT_DIR/sql/run_sql.sh
+    -echo $CI_PROJECTDIR/sql/$EXECUTEENV/sql
+    -echo $CI_PROJECTDIR/sql/"$EXECUTEENV"/sql
+    -ls $CI_PROJECTDIR/sql/$EXECUTEENV/sql
+    -$CI_PROJECT_DIR/sql/run_sql.sh $CI_PROJECT_DIR/sql/$EXECUTE_ENV/db_config_$EXECUTEENV.txt $CI_PROJECTDIR/sql/$EXECUTE_ENV/sql
+  rules:
+    - if: $CI_PIPELINE_SOURCE == web && $MANUAL_TARGET_JOB == test-execution
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == schedule
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == push
+      when: never
+
+executetest:
+  stage: test
+  stags:
+    - asta2-testAutomation
+  dependences:
+    - execute-sql
+  script:
+    - export CURRENT_TIMESTAMP=$(date =%Y%m%d%H5M5S)
+    - mvn test -Denv=$EXECUTE_ENV -Dcucumber.filter.tags=${CUCUMBER_TAGS} -Dallure.results.directory=target/allure-results/${CURRENT_TIMESTAMP}
+    - ls target/allure-results/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == web && $MANUAL_TARGET_JOB == test-execution
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == schedule
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == push
+      when: never
+  artifacts:
+    paths:
+      - target/allure-results
+    when: always
+
+generate-allure-report:
+  stage: generate-report
+  tags:
+    - asta2-testAutomation
+  script:
+    - ls- l target/allure-results
+    - mkdir -p $BUILD_OUTPUT_DIR
+    - mkdir -p target/allure-results/history
+    - git clone http://gitlab-ci-token:$HSITORY
+    - if [ -d $ASTA_REPORT_REPO_LOCAL_DIR/target/allure-results]; then
+        cp -r $ASTA_REPORT_REPO_LOCAL_DIR/target/allure-results/ target/allure-results;
+      fi
+    - echo "Cleaning up old files in the directory..."
+    - |
+      # 対象のディレクトリ設定
+      TARGET_DIR=target/allure-results/
+      # フォルダ数のカウントを初期化
+      FOLDER_COUNT=0
+      # フォルダ一覧を取得（降順でソート）
+      FOLDER_LIST=$(ls $TARGET | sort -r)
+      echo $FOLDER_LIST
+      
+      for remove_folder in target/allure-results; do
+        # フォルダ数をカウント
+        FOlDER_COUNT=$((FOLDER_COUNT + 1))
+      
+        # フォルダ数がFOLDER_LIMIT_VALUE　件以上の場合、フォルダを削除
+        if [ "$FOLDER_COUNT" -ge $((FOLDER_LIMIT_VALUE))]; then
+          remove_folder=$TARGET_DIR$remove_folder
+          if [[ $remove_folder != *"history" ]] && [ -d $remove_folder ]; then
+            #historyフォルダ以外のフォルダを対象に削除
+            echo "Deleating old folder: $remove_folder"
+            rm -rf "$remove_folder"
+          fi
+        fi
+      done
+
+    - echo "Creating merged results directory..."
+    - mkdir -p merged-allure-results/history
+
+    - echo "Copying and merging allure results, excluding the history directory..."
+    - >
+      for dir in target/allure-results/*; do
+        if [[$(basename $dir)!=history]]; then
+          echo "Copying folder: $dir"
+          cp -r $dir merged-allure-results/
+        fi
+      done
+
+    - if [ -d $ASTA_REPORT_REPO_LOCAL_DIR/history ]; then
+      cp -r $ASTA_REPORT_REPO_LOCAL_DIR/histrory/* target/allure-results/history;
+      cp -r $ASTA_REPORT_REPO_LOCAL_DIR/histrory/* mergedallure-results/history;
+      fi
+    - ls merged-allure-results
+    - echo "Generating report..."
+    - allure generate -c merged-allure-results -o $BUILD_OUTPUT_DIR
+  rules:
+    - if: $CI_PIPELINE_SOURCE == web && $MANUAL_TARGET_JOB == test-execution
+      when: on_success
+    - if: $CI_PIPELINE_SOURCE == schedule
+      when: never
+  artifacts:
+    paths:
+      - target/allure-results
+      - $BUILD_OUTPUT_DIR
+  dependencies:
+      -execute-test
+
+  pages:
+    stage: deploy
+    tags:
+      - asta2-TestAutomation
+    script:
+      - ls -l work
+      - mkdir -p $DEPLOY_OUTPUT_DIR
+      - ls $BUILD_OUTPUT_DIR
+      - cp -r $BUILD_OUTPUT_DIR/. $DEPLOY_OUTPUT_DIR
+      - ls -ld public
+      - ls public
+      - pwd
+      - ls $$DEPLOY_OUTPUT_DIR
+    rules:
+      - if: $CI_PIPELINE_SOURCE == web && $MANUAL_TARGET_JOB == test-execution
+        when: on_success
+      - if: $CI_PIPELINE_SOURCE == schedule
+        when: on_success
+      - if: $CI_PIPELINE_SOURCE == push
+        when: never
+    artifacts:
+      paths:
+        - public
+        - target/allure-results
+      expire_in: 30 days
+    dependencies:
+      - generate-allure-report
+
+update-history:
+  stage: update-history
+  tags:
+    - asta2-testAutomation
+  dependencies:
+    - pages
+  script:
+    - git clone http//gitlab
+    - mkdir -p $ASTA_REPORT_REPO_LOCAL_DIR/history
+    - cp -r public/history/* $ASTA_REPORT_LOCAL_DIR/history/
+    - mkdir -p $ASTA_REPORT_REPO_LOCAL_DIR/history/
+    - SOURCE_DIR ="target/allure-results"
+    - DESTINATION_DIR="${ASTA_REPORT_REPO_LOCAL_DIR}/target/allure-results"
+    - cp -r target/allure-results/* $ASTA_REPORT_REPO_LOCAL_DIR/target/allure-reports
+    - >
+      for item in $ASTA_REPORT_REPO_LOCAL_DIR/target/allure-results/*; do
+        base_item=$(basename "$item")
+        if [ ! -e target/allure-results/$base_item ]; then
+          #コピー先に存在しない場合削除
+          echo "Deleting $item as it does not exist in source"
+          rm -rf "$item"
+        fi
+      done
+    - echo "Deleting $item as it does not exist in source"
+    - cd $ASTA_REPORT_REPO_LOCAL_DIR
+    - git add history
+    - git add target/allure-results
+    - git commit -m "Update ALLure Result"
+    - git push http://gitlab-ci-token:$HISTORY_REPO_TOKEN@$ASTA_REPORT_REPO
+  ruels:
+    - if: '$CI_PIPELINE_SOURCE == "web && $MANUAL_TARGET_JOB == "test-execution"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "push"'
+      when: never
