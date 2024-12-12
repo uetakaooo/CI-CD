@@ -1,0 +1,26 @@
+version: '3'
+services:
+  gitlab_runner_asta2:
+    container_name: gitlab_runner_asta-01 #　起動するコンテナ名
+    image: gitlab-runner:asta2.0
+    volumes:
+      - runner_etc:/etc/gitlab-runner
+      - runner_home:/home/gitlab-runner
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - asta2_network
+    ports:
+      - "0.0.0.0:8093:8093"
+    mem_limit: 16g
+    cpus: 2
+    tty: false #コンテナが終了しないようにする起動オプション
+    environment:
+      TZ: Asia/Tokyo
+networks:
+  asta2_network:
+    name: asta2_network
+volumes:
+  runner_etc:
+    name: gitlab_runner_asta2
+  runner_home:
+    name: gitlab_runner_asta2_home
